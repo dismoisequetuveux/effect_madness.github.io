@@ -1,0 +1,1015 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>Univers « Néon » & Paysage Sonore Ultra-Évolutif (Couleurs Dynamiques)</title>
+  <style>
+    /*──────────────────────────────────────────────────────────────────────────*
+     * 1. Réinitialisation totale des marges et occupation intégrale de la fenêtre *
+     *──────────────────────────────────────────────────────────────────────────*/
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background-color: #050005;
+    }
+
+    /*──────────────────────────────────────────────────────────────────────────*
+     * 2. Canvas WebGL couvrant tout l’écran sans bordure                        *
+     *──────────────────────────────────────────────────────────────────────────*/
+    #glCanvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    /*──────────────────────────────────────────────────────────────────────────*
+     * 3. Overlay (couche d’invite) pour démarrer visuel et audio               *
+     *──────────────────────────────────────────────────────────────────────────*/
+    #overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background-color: rgba(5, 0, 5, 0.75);
+      color: #FF66FF;
+      font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+      font-size: 1.8rem;
+      text-align: center;
+      cursor: pointer;
+      z-index: 10;
+      user-select: none;
+    }
+    #overlay:hover {
+      color: #FFFF66;
+    }
+  </style>
+</head>
+<body>
+
+<canvas id="glCanvas"></canvas>
+<div id="overlay">
+  Cliquez pour lancer l’univers néon animé<br>et l’ambiance sonore ultra-évolutive
+</div>
+
+<script>
+  //////////////////////////////////////////////////////////////////////////////
+  // I. SECTION WEBGL : VISUEL « NÉON » AVANCÉ AVEC COULEURS DYNAMIQUES
+  //////////////////////////////////////////////////////////////////////////////
+
+  const canvas = document.getElementById('glCanvas');
+  const gl = canvas.getContext('webgl2');
+  if (!gl) {
+    alert("WebGL2 n'est pas pris en charge par ce navigateur.");
+    throw new Error("WebGL2 non disponible.");
+  }
+
+  function resizeCanvas() {
+    canvas.style.width  = window.innerWidth + 'px';
+    canvas.style.height = window.innerHeight + 'px';
+    canvas.width  = window.innerWidth  * window.devicePixelRatio;
+    canvas.height = window.innerHeight * window.devicePixelRatio;
+    gl.viewport(0, 0, canvas.width, canvas.height);
+  }
+  window.addEventListener('resize', resizeCanvas);
+  resizeCanvas();
+
+  function createFramebuffer(width, height) {
+    const fb = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+      console.error("Framebuffer non complet");
+    }
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return { framebuffer: fb, texture: tex };
+  }
+
+  const fbScene    = createFramebuffer(canvas.width, canvas.height);
+  const fbBright   = createFramebuffer(canvas.width, canvas.height);
+  const fbBlurTemp = createFramebuffer(canvas.width, canvas.height);
+  const fbBlur     = createFramebuffer(canvas.width, canvas.height);
+  const fbPrev     = createFramebuffer(canvas.width, canvas.height);
+
+  // Vertex shader : quad plein écran
+  const vertexShaderSource = `#version 300 es
+    in vec2 a_position;
+    out vec2 v_uv;
+    void main() {
+      v_uv = a_position * 0.5 + 0.5;
+      gl_Position = vec4(a_position, 0.0, 1.0);
+    }
+  `;
+
+  // Fragment shader principal : trois fractales + couleurs cycliques
+  const fragmentShaderScene = `#version 300 es
+    precision highp float;
+    in vec2 v_uv;
+    out vec4 fragColor;
+
+    uniform float u_time;
+    uniform vec2  u_resolution;
+    uniform vec2  u_moveDir1;
+    uniform vec2  u_moveDir2;
+    uniform vec2  u_moveDir3;
+    uniform float u_moveSpeed1;
+    uniform float u_moveSpeed2;
+    uniform float u_moveSpeed3;
+
+    #define NB_CERCLES 5
+    #define NB_LIGNES 5
+
+    uniform vec3 u_circleParams[NB_CERCLES];
+    uniform float u_circleTh[NB_CERCLES];
+    uniform float u_circleHue[NB_CERCLES];
+    uniform float u_circleLife[NB_CERCLES];
+
+    uniform vec4 u_lineParams[NB_LIGNES];
+    uniform float u_lineTh[NB_LIGNES];
+    uniform float u_lineHue[NB_LIGNES];
+    uniform float u_lineLife[NB_LIGNES];
+
+    // Simplex noise 2D (Ashima)
+    vec3 mod289(vec3 x) {
+      return x - floor(x * (1.0 / 289.0)) * 289.0;
+    }
+    vec2 mod289(vec2 x) {
+      return x - floor(x * (1.0 / 289.0)) * 289.0;
+    }
+    vec3 permute(vec3 x) {
+      return mod289(((x * 34.0) + 1.0) * x);
+    }
+    float snoise(vec2 v) {
+      const vec4 C = vec4(0.211324865405187,
+                          0.366025403784439,
+                         -0.577350269189626,
+                          0.024390243902439);
+      vec2 i = floor(v + dot(v, C.yy));
+      vec2 x0 = v - i + dot(i, C.xx);
+      vec2 i1 = (x0.x > x0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+      vec4 x12 = x0.xyxy + C.xxzz;
+      x12.xy -= i1;
+      i = mod289(i);
+      vec3 p = permute(permute(i.y + vec3(0.0, i1.y, 1.0))
+                     + i.x + vec3(0.0, i1.x, 1.0));
+      vec3 m = max(0.5 - vec3(dot(x0, x0),
+                              dot(x12.xy, x12.xy),
+                              dot(x12.zw, x12.zw)), 0.0);
+      m = m * m;
+      m = m * m;
+      vec3 x = 2.0 * fract(p * C.www) - 1.0;
+      vec3 h = abs(x) - 0.5;
+      vec3 ox = floor(x + 0.5);
+      vec3 a0 = x - ox;
+      m *= 1.79284291400159 - 0.85373472095314 * (a0 * a0 + h * h);
+      vec3 g;
+      g.x  = a0.x * x0.x + h.x * x0.y;
+      g.yz = a0.yz * x12.xz + h.yz * x12.yw;
+      return 130.0 * dot(m, g);
+    }
+
+    // Conversion HSV → RGB
+    vec3 hsv2rgb(vec3 c) {
+      vec3 rgb = clamp(abs(mod(c.x * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0,
+                       0.0, 1.0);
+      return c.z * mix(vec3(1.0), rgb, c.y);
+    }
+
+    float drawCircle(vec2 uv, vec2 center, float radius, float th, float life) {
+      float d = length(uv - center);
+      float edge0 = radius - th;
+      float edge1 = radius + th;
+      float ring = smoothstep(edge1, radius, d) - smoothstep(radius, edge0, d);
+      float alpha = smoothstep(0.0, 0.1, life) * (1.0 - smoothstep(0.9, 1.0, life));
+      return ring * alpha;
+    }
+
+    float drawLine(vec2 uv, vec2 p1, vec2 p2, float th, float life) {
+      vec2 dir = normalize(p2 - p1);
+      float proj = dot(uv - p1, dir);
+      vec2 closest = p1 + clamp(proj, 0.0, length(p2 - p1)) * dir;
+      float d = length(uv - closest);
+      float alpha = smoothstep(0.0, 0.1, life) * (1.0 - smoothstep(0.9, 1.0, life));
+      return (1.0 - smoothstep(th, th + 0.005, d)) * alpha;
+    }
+
+    void main() {
+      // Coordonnées UV dans [-1,+1], ratio préservé
+      vec2 uv = v_uv * 2.0 - 1.0;
+      uv.x *= u_resolution.x / u_resolution.y;
+
+      // Trois couches fractales
+      float t1 = u_time * u_moveSpeed1;
+      float t2 = u_time * u_moveSpeed2;
+      float t3 = u_time * u_moveSpeed3;
+      vec2 s1 = uv + u_moveDir1 * t1;
+      vec2 s2 = uv + u_moveDir2 * t2;
+      vec2 s3 = uv + u_moveDir3 * t3;
+
+      // Fractale 1
+      float f1 = 0.0, a1 = 1.0;
+      vec2 p1 = s1 * 1.2;
+      for (int i = 0; i < 4; i++) {
+        f1 += snoise(p1 + t1 * 0.5) * a1;
+        p1 *= 2.0;
+        a1 *= 0.5;
+      }
+      f1 = f1 * 0.5 + 0.5;
+
+      // Fractale 2
+      float f2 = 0.0, a2 = 1.0;
+      vec2 p2 = s2 * 1.7;
+      for (int i = 0; i < 4; i++) {
+        f2 += snoise(p2 + t2 * 0.3) * a2;
+        p2 *= 2.0;
+        a2 *= 0.5;
+      }
+      f2 = f2 * 0.5 + 0.5;
+
+      // Fractale 3
+      float f3 = 0.0, a3 = 1.0;
+      vec2 p3 = s3 * 0.8;
+      for (int i = 0; i < 4; i++) {
+        f3 += snoise(p3 + t3 * 0.7) * a3;
+        p3 *= 2.0;
+        a3 *= 0.5;
+      }
+      f3 = f3 * 0.5 + 0.5;
+
+      float combinedNoise = f1 * 0.5 + f2 * 0.3 + f3 * 0.2;
+      float wave = sin((s1.x + s1.y + s2.x + s2.y + s3.x + s3.y + u_time * 0.2) * 1.5) * 0.5 + 0.5;
+      float combined = combinedNoise * 0.6 + wave * 0.4;
+
+      // Hue cyclique continu : variation permanente
+      float hue = fract(combined + u_time * 0.05);
+      float sat = 1.0;
+      float val = mix(0.5, 1.0, combined);
+      vec3 color = hsv2rgb(vec3(hue, sat, val));
+
+      // Formes vectorielles
+      vec3 shapeColor = vec3(0.0);
+      float shapeMask  = 0.0;
+      for (int c = 0; c < NB_CERCLES; c++) {
+        vec3 cp = u_circleParams[c];
+        vec2 center = vec2(cp.x * 2.0 - 1.0, cp.y * 2.0 - 1.0);
+        float r    = drawCircle(uv, center, cp.z, u_circleTh[c], u_circleLife[c]);
+        // Chaque shape a sa propre teinte cyclique
+        float hC = fract(u_circleHue[c] + u_time * 0.02 + float(c) * 0.07);
+        vec3 rgbC = hsv2rgb(vec3(hC, 1.0, 1.0));
+        shapeColor += rgbC * r;
+        shapeMask  += r;
+      }
+      for (int l = 0; l < NB_LIGNES; l++) {
+        vec4 lp = u_lineParams[l];
+        vec2 p1 = vec2(lp.x * 2.0 - 1.0, lp.y * 2.0 - 1.0);
+        vec2 p2 = vec2(lp.z * 2.0 - 1.0, lp.w * 2.0 - 1.0);
+        float r    = drawLine(uv, p1, p2, u_lineTh[l], u_lineLife[l]);
+        float hL = fract(u_lineHue[l] + u_time * 0.03 + float(l) * 0.05);
+        vec3 rgbL = hsv2rgb(vec3(hL, 1.0, 1.0));
+        shapeColor += rgbL * r;
+        shapeMask  += r;
+      }
+
+      vec3 glow = color * exp(-12.0 * (1.0 - combined)) * 1.8;
+      vec3 finalRGB = color + glow * 0.8 + shapeColor;
+      fragColor = vec4(finalRGB, 1.0);
+      fragColor.a = clamp(shapeMask, 0.0, 1.0);
+    }
+  `;
+
+  // Bright Pass
+  const fragmentShaderBrightPass = `#version 300 es
+    precision highp float;
+    in vec2 v_uv;
+    uniform sampler2D u_texture;
+    out vec4 fragColor;
+    void main() {
+      vec3 col = texture(u_texture, v_uv).rgb;
+      float b = max(max(col.r, col.g), col.b);
+      float m = step(0.7, b);
+      fragColor = vec4(col * m, 1.0);
+    }
+  `;
+
+  // Blur Horizontal
+  const fragmentShaderBlurH = `#version 300 es
+    precision highp float;
+    in vec2 v_uv;
+    uniform sampler2D u_texture;
+    uniform vec2 u_texelSize;
+    out vec4 fragColor;
+    void main() {
+      vec2 ofs = vec2(u_texelSize.x, 0.0);
+      vec3 sum = texture(u_texture, v_uv).rgb * 0.4;
+      sum += texture(u_texture, v_uv + ofs * 1.0).rgb * 0.15;
+      sum += texture(u_texture, v_uv - ofs * 1.0).rgb * 0.15;
+      sum += texture(u_texture, v_uv + ofs * 2.0).rgb * 0.15;
+      sum += texture(u_texture, v_uv - ofs * 2.0).rgb * 0.15;
+      fragColor = vec4(sum, 1.0);
+    }
+  `;
+
+  // Blur Vertical
+  const fragmentShaderBlurV = `#version 300 es
+    precision highp float;
+    in vec2 v_uv;
+    uniform sampler2D u_texture;
+    uniform vec2 u_texelSize;
+    out vec4 fragColor;
+    void main() {
+      vec2 ofs = vec2(0.0, u_texelSize.y);
+      vec3 sum = texture(u_texture, v_uv).rgb * 0.4;
+      sum += texture(u_texture, v_uv + ofs * 1.0).rgb * 0.15;
+      sum += texture(u_texture, v_uv - ofs * 1.0).rgb * 0.15;
+      sum += texture(u_texture, v_uv + ofs * 2.0).rgb * 0.15;
+      sum += texture(u_texture, v_uv - ofs * 2.0).rgb * 0.15;
+      fragColor = vec4(sum, 1.0);
+    }
+  `;
+
+  // Compositing final (bloom + motion blur)
+  const fragmentShaderFinal = `#version 300 es
+    precision highp float;
+    in vec2 v_uv;
+    uniform sampler2D u_scene;
+    uniform sampler2D u_blur;
+    uniform sampler2D u_prev;
+    uniform float u_mixPrev;
+    out vec4 fragColor;
+    void main() {
+      vec3 cScene = texture(u_scene, v_uv).rgb;
+      vec3 cBlur  = texture(u_blur,  v_uv).rgb;
+      vec3 bloom  = cBlur;
+      vec3 comp   = cScene + bloom;
+      float mask  = texture(u_scene, v_uv).a;
+      vec3 prev   = texture(u_prev, v_uv).rgb;
+      vec3 mixed  = mix(comp, prev, mask * u_mixPrev);
+      fragColor = vec4(mixed, 1.0);
+    }
+  `;
+
+  function createShader(type, source) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, source);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+      console.error("Erreur compilation shader :", gl.getShaderInfoLog(s));
+      gl.deleteShader(s);
+      return null;
+    }
+    return s;
+  }
+
+  function createProgram(vsSrc, fsSrc) {
+    const vs = createShader(gl.VERTEX_SHADER, vsSrc);
+    const fs = createShader(gl.FRAGMENT_SHADER, fsSrc);
+    const p = gl.createProgram();
+    gl.attachShader(p, vs);
+    gl.attachShader(p, fs);
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+      console.error("Erreur linkage programme :", gl.getProgramInfoLog(p));
+      gl.deleteProgram(p);
+      return null;
+    }
+    return p;
+  }
+
+  const progScene      = createProgram(vertexShaderSource, fragmentShaderScene);
+  const progBrightPass = createProgram(vertexShaderSource, fragmentShaderBrightPass);
+  const progBlurH      = createProgram(vertexShaderSource, fragmentShaderBlurH);
+  const progBlurV      = createProgram(vertexShaderSource, fragmentShaderBlurV);
+  const progFinal      = createProgram(vertexShaderSource, fragmentShaderFinal);
+
+  const sceneLoc = {
+    pos:           gl.getAttribLocation(progScene,    "a_position"),
+    time:          gl.getUniformLocation(progScene,    "u_time"),
+    res:           gl.getUniformLocation(progScene,    "u_resolution"),
+    moveDir1:      gl.getUniformLocation(progScene,    "u_moveDir1"),
+    moveDir2:      gl.getUniformLocation(progScene,    "u_moveDir2"),
+    moveDir3:      gl.getUniformLocation(progScene,    "u_moveDir3"),
+    moveSp1:       gl.getUniformLocation(progScene,    "u_moveSpeed1"),
+    moveSp2:       gl.getUniformLocation(progScene,    "u_moveSpeed2"),
+    moveSp3:       gl.getUniformLocation(progScene,    "u_moveSpeed3"),
+    circleParams:  gl.getUniformLocation(progScene,    "u_circleParams"),
+    circleTh:      gl.getUniformLocation(progScene,    "u_circleTh"),
+    circleHue:     gl.getUniformLocation(progScene,    "u_circleHue"),
+    circleLife:    gl.getUniformLocation(progScene,    "u_circleLife"),
+    lineParams:    gl.getUniformLocation(progScene,    "u_lineParams"),
+    lineTh:        gl.getUniformLocation(progScene,    "u_lineTh"),
+    lineHue:       gl.getUniformLocation(progScene,    "u_lineHue"),
+    lineLife:      gl.getUniformLocation(progScene,    "u_lineLife")
+  };
+
+  const brightLoc = {
+    pos: gl.getAttribLocation(progBrightPass, "a_position"),
+    tex: gl.getUniformLocation(progBrightPass, "u_texture")
+  };
+
+  const blurHLoc = {
+    pos:       gl.getAttribLocation(progBlurH, "a_position"),
+    tex:       gl.getUniformLocation(progBlurH, "u_texture"),
+    texelSize: gl.getUniformLocation(progBlurH, "u_texelSize")
+  };
+
+  const blurVLoc = {
+    pos:       gl.getAttribLocation(progBlurV, "a_position"),
+    tex:       gl.getUniformLocation(progBlurV, "u_texture"),
+    texelSize: gl.getUniformLocation(progBlurV, "u_texelSize")
+  };
+
+  const finalLoc = {
+    pos:     gl.getAttribLocation(progFinal, "a_position"),
+    scene:   gl.getUniformLocation(progFinal, "u_scene"),
+    blur:    gl.getUniformLocation(progFinal, "u_blur"),
+    prev:    gl.getUniformLocation(progFinal, "u_prev"),
+    mixPrev: gl.getUniformLocation(progFinal, "u_mixPrev")
+  };
+
+  const quadVerts = new Float32Array([
+    -1, -1,
+     1, -1,
+    -1,  1,
+    -1,  1,
+     1, -1,
+     1,  1
+  ]);
+  const quadVBO = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, quadVBO);
+  gl.bufferData(gl.ARRAY_BUFFER, quadVerts, gl.STATIC_DRAW);
+
+  // Initialisation des formes
+  const circleParams = new Float32Array(3 * 5);
+  const circleTh     = new Float32Array(5);
+  const circleHue    = new Float32Array(5);
+  const circleLife   = new Float32Array(5);
+
+  const lineParams   = new Float32Array(4 * 5);
+  const lineTh       = new Float32Array(5);
+  const lineHue      = new Float32Array(5);
+  const lineLife     = new Float32Array(5);
+
+  function initShapes() {
+    for (let i = 0; i < 5; i++) {
+      const cx = Math.random() * 1.2 - 0.1;
+      const cy = Math.random() * 1.2 - 0.1;
+      const r  = 0.05 + Math.random() * 0.15;
+      circleParams[i*3+0] = cx;
+      circleParams[i*3+1] = cy;
+      circleParams[i*3+2] = r;
+      circleTh[i]   = 0.005 + Math.random() * 0.01;
+      circleHue[i]  = Math.random(); // initial hue aléatoire
+      circleLife[i] = Math.random();
+
+      const x1 = Math.random() * 1.2 - 0.1;
+      const y1 = Math.random() * 1.2 - 0.1;
+      const x2 = Math.random() * 1.2 - 0.1;
+      const y2 = Math.random() * 1.2 - 0.1;
+      lineParams[i*4+0] = x1;
+      lineParams[i*4+1] = y1;
+      lineParams[i*4+2] = x2;
+      lineParams[i*4+3] = y2;
+      lineTh[i]   = 0.002 + Math.random() * 0.008;
+      lineHue[i]  = Math.random();
+      lineLife[i] = Math.random();
+    }
+  }
+  initShapes();
+
+  function randomUnit() {
+    const a = Math.random() * Math.PI * 2;
+    return [Math.cos(a), Math.sin(a)];
+  }
+  const dir1 = randomUnit();
+  const dir2 = randomUnit();
+  const dir3 = randomUnit();
+  const speed1 = 0.02 + Math.random() * 0.08;
+  const speed2 = 0.05 + Math.random() * 0.1;
+  const speed3 = 0.03 + Math.random() * 0.06;
+  const mixPrev = 0.85;
+
+  let startTime = null;
+  function renderFrame(timeStamp) {
+    if (!startTime) startTime = timeStamp;
+    const elapsed = (timeStamp - startTime) / 1000.0;
+
+    // Pass 1 : rendu principal dans fbScene
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbScene.framebuffer);
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.clearColor(0.0, 0.0, 0.0, 1.0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+
+    gl.useProgram(progScene);
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadVBO);
+    gl.enableVertexAttribArray(sceneLoc.pos);
+    gl.vertexAttribPointer(sceneLoc.pos, 2, gl.FLOAT, false, 0, 0);
+
+    gl.uniform1f(sceneLoc.time, elapsed);
+    gl.uniform2f(sceneLoc.res, canvas.width, canvas.height);
+    gl.uniform2f(sceneLoc.moveDir1, dir1[0], dir1[1]);
+    gl.uniform2f(sceneLoc.moveDir2, dir2[0], dir2[1]);
+    gl.uniform2f(sceneLoc.moveDir3, dir3[0], dir3[1]);
+    gl.uniform1f(sceneLoc.moveSp1, speed1);
+    gl.uniform1f(sceneLoc.moveSp2, speed2);
+    gl.uniform1f(sceneLoc.moveSp3, speed3);
+
+    for (let i = 0; i < 5; i++) {
+      const baseCx = circleParams[i*3+0];
+      const baseCy = circleParams[i*3+1];
+      const oscillX = baseCx + 0.02 * Math.sin(elapsed * (1.0 + i * 0.3) + i);
+      const oscillY = baseCy + 0.02 * Math.cos(elapsed * (1.2 + i * 0.4) + i * 1.7);
+      circleParams[i*3+0] = oscillX;
+      circleParams[i*3+1] = oscillY;
+      circleLife[i] = (elapsed * 0.2 + i * 0.17) % 1.0;
+
+      const x1b = lineParams[i*4+0];
+      const y1b = lineParams[i*4+1];
+      const x2b = lineParams[i*4+2];
+      const y2b = lineParams[i*4+3];
+      const angleL = elapsed * (0.5 + i * 0.2);
+      const cosA = Math.cos(angleL), sinA = Math.sin(angleL);
+      const rx1 = x1b * cosA - y1b * sinA;
+      const ry1 = x1b * sinA + y1b * cosA;
+      const rx2 = x2b * cosA - y2b * sinA;
+      const ry2 = x2b * sinA + y2b * cosA;
+      lineParams[i*4+0] = rx1;
+      lineParams[i*4+1] = ry1;
+      lineParams[i*4+2] = rx2;
+      lineParams[i*4+3] = ry2;
+      lineLife[i] = (elapsed * 0.15 + i * 0.23) % 1.0;
+    }
+
+    gl.uniform3fv(sceneLoc.circleParams, circleParams);
+    gl.uniform1fv(sceneLoc.circleTh,   circleTh);
+    gl.uniform1fv(sceneLoc.circleHue,  circleHue);
+    gl.uniform1fv(sceneLoc.circleLife, circleLife);
+
+    gl.uniform4fv(sceneLoc.lineParams, lineParams);
+    gl.uniform1fv(sceneLoc.lineTh,     lineTh);
+    gl.uniform1fv(sceneLoc.lineHue,    lineHue);
+    gl.uniform1fv(sceneLoc.lineLife,   lineLife);
+
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    // Pass 2 : bright pass
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbBright.framebuffer);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.useProgram(progBrightPass);
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadVBO);
+    gl.enableVertexAttribArray(brightLoc.pos);
+    gl.vertexAttribPointer(brightLoc.pos, 2, gl.FLOAT, false, 0, 0);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, fbScene.texture);
+    gl.uniform1i(brightLoc.tex, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    // Pass 3 : blur horizontal
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbBlurTemp.framebuffer);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.useProgram(progBlurH);
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadVBO);
+    gl.enableVertexAttribArray(blurHLoc.pos);
+    gl.vertexAttribPointer(blurHLoc.pos, 2, gl.FLOAT, false, 0, 0);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, fbBright.texture);
+    gl.uniform1i(blurHLoc.tex, 0);
+    gl.uniform2f(blurHLoc.texelSize, 1.0 / canvas.width, 1.0 / canvas.height);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    // Pass 4 : blur vertical
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbBlur.framebuffer);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.useProgram(progBlurV);
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadVBO);
+    gl.enableVertexAttribArray(blurVLoc.pos);
+    gl.vertexAttribPointer(blurVLoc.pos, 2, gl.FLOAT, false, 0, 0);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, fbBlurTemp.texture);
+    gl.uniform1i(blurVLoc.tex, 0);
+    gl.uniform2f(blurVLoc.texelSize, 1.0 / canvas.width, 1.0 / canvas.height);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    // Pass 5 : compositing final
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.useProgram(progFinal);
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadVBO);
+    gl.enableVertexAttribArray(finalLoc.pos);
+    gl.vertexAttribPointer(finalLoc.pos, 2, gl.FLOAT, false, 0, 0);
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, fbScene.texture);
+    gl.uniform1i(finalLoc.scene, 0);
+
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, fbBlur.texture);
+    gl.uniform1i(finalLoc.blur, 1);
+
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, fbPrev.texture);
+    gl.uniform1i(finalLoc.prev, 2);
+
+    gl.uniform1f(finalLoc.mixPrev, mixPrev);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    // Copie pour motion blur
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, fbPrev.framebuffer);
+    gl.blitFramebuffer(
+      0, 0, canvas.width, canvas.height,
+      0, 0, canvas.width, canvas.height,
+      gl.COLOR_BUFFER_BIT, gl.NEAREST
+    );
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+    requestAnimationFrame(renderFrame);
+  }
+
+  //////////////////////////////////////////////////////////////////////////////
+  // II. SECTION WEBAUDIO : INTACTE (cf. version précédente corrigée)
+  //////////////////////////////////////////////////////////////////////////////
+
+  function generateReverbImpulseResponse(ctx, durationSec = 3.0, decay = 3.0) {
+    const rate   = ctx.sampleRate;
+    const length = Math.floor(rate * durationSec);
+    const impulse = ctx.createBuffer(2, length, rate);
+    for (let ch = 0; ch < 2; ch++) {
+      const data = impulse.getChannelData(ch);
+      for (let i = 0; i < length; i++) {
+        data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / length, decay);
+      }
+    }
+    return impulse;
+  }
+
+  function createGranularBuffer(ctx, durationSec = 4.0) {
+    const rate = ctx.sampleRate;
+    const len  = Math.floor(rate * durationSec);
+    const buf  = ctx.createBuffer(1, len, rate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) {
+      data[i] = (Math.random() * 2.0 - 1.0) * Math.pow(1.0 - i / len, 1.5);
+    }
+    return buf;
+  }
+
+  function initAudioComplex() {
+    try {
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+      const masterGain = audioCtx.createGain();
+      masterGain.gain.value = 0.18;
+      masterGain.connect(audioCtx.destination);
+
+      const convolver = audioCtx.createConvolver();
+      convolver.buffer = generateReverbImpulseResponse(audioCtx, 3.0, 3.0);
+
+      const dryGain = audioCtx.createGain();
+      dryGain.gain.value = 0.60;
+      const wetGain = audioCtx.createGain();
+      wetGain.gain.value = 0.40;
+
+      convolver.connect(wetGain).connect(masterGain);
+      dryGain.connect(masterGain);
+
+      const now = audioCtx.currentTime;
+
+      // A) FM PAD PRINCIPAL
+      const modulator1 = audioCtx.createOscillator();
+      modulator1.type = "sine";
+      modulator1.frequency.value = 0.4;
+      const modGain1 = audioCtx.createGain(); modGain1.gain.value = 150;
+      modulator1.connect(modGain1);
+
+      const carrier1 = audioCtx.createOscillator();
+      carrier1.type = "sine";
+      carrier1.frequency.value = 180;
+      modGain1.connect(carrier1.frequency);
+
+      const fmGain1 = audioCtx.createGain();
+      fmGain1.gain.value = 0.0;
+      const fmPanner1 = audioCtx.createStereoPanner();
+      fmPanner1.pan.value = 0.0;
+
+      carrier1.connect(fmGain1).connect(fmPanner1);
+      fmPanner1.connect(dryGain);
+      fmPanner1.connect(convolver);
+
+      modulator1.start(now);
+      carrier1.start(now);
+      fmGain1.gain.setValueAtTime(0.0, now);
+      fmGain1.gain.linearRampToValueAtTime(0.30, now + 8.0);
+
+      setInterval(() => {
+        const t0 = audioCtx.currentTime;
+        const newFreq = 150 + Math.random() * 100;
+        carrier1.frequency.cancelScheduledValues(t0);
+        carrier1.frequency.linearRampToValueAtTime(newFreq, t0 + 3.0);
+      }, 8000 + Math.random() * 4000);
+
+      setInterval(() => {
+        const t0 = audioCtx.currentTime;
+        const newGainVal = 0.2 + Math.random() * 0.15;
+        fmGain1.gain.cancelScheduledValues(t0);
+        fmGain1.gain.linearRampToValueAtTime(newGainVal, t0 + 2.0);
+      }, 10000 + Math.random() * 5000);
+
+      // B) FM PAD SECONDAIRE (oscillation ×10)
+      const modulator2 = audioCtx.createOscillator();
+      modulator2.type = "sine";
+      modulator2.frequency.value = 4.0;
+      const modGain2 = audioCtx.createGain(); modGain2.gain.value = 100;
+      modulator2.connect(modGain2);
+
+      const carrier2 = audioCtx.createOscillator();
+      carrier2.type = "sine";
+      carrier2.frequency.value = 320;
+      modGain2.connect(carrier2.frequency);
+
+      const fmGain2 = audioCtx.createGain();
+      fmGain2.gain.value = 0.0;
+      const fmPanner2 = audioCtx.createStereoPanner();
+      fmPanner2.pan.value = 0.0;
+
+      carrier2.connect(fmGain2).connect(fmPanner2);
+      fmPanner2.connect(dryGain);
+      fmPanner2.connect(convolver);
+
+      modulator2.start(now);
+      carrier2.start(now);
+      fmGain2.gain.setValueAtTime(0.0, now);
+      fmGain2.gain.linearRampToValueAtTime(0.20, now + 12.0);
+
+      setInterval(() => {
+        const t0 = audioCtx.currentTime;
+        const newFreq = 250 + Math.random() * 150;
+        carrier2.frequency.cancelScheduledValues(t0);
+        carrier2.frequency.linearRampToValueAtTime(newFreq, t0 + 3.5);
+      }, 9000 + Math.random() * 4000);
+
+      setInterval(() => {
+        const t0 = audioCtx.currentTime;
+        const newGainVal = 0.15 + Math.random() * 0.15;
+        fmGain2.gain.cancelScheduledValues(t0);
+        fmGain2.gain.linearRampToValueAtTime(newGainVal, t0 + 2.5);
+      }, 11000 + Math.random() * 6000);
+
+      // C) CLOCHE SYNTHÉTIQUE
+      const bellOsc = audioCtx.createOscillator();
+      bellOsc.type = "square";
+      bellOsc.frequency.value = 450;
+
+      const bellFilter = audioCtx.createBiquadFilter();
+      bellFilter.type = "lowpass";
+      bellFilter.frequency.value = 900;
+
+      const bellDryGain = audioCtx.createGain();
+      bellDryGain.gain.value = 0.0;
+      const bellConvolver = audioCtx.createConvolver();
+      bellConvolver.buffer = generateReverbImpulseResponse(audioCtx, 3.5, 2.5);
+      const bellWetGain = audioCtx.createGain();
+      bellWetGain.gain.value = 0.7;
+
+      const bellPanner = audioCtx.createStereoPanner();
+      bellPanner.pan.value = 0.0;
+
+      bellOsc.connect(bellFilter).connect(bellDryGain);
+      bellOsc.connect(bellFilter).connect(bellConvolver);
+      bellDryGain.connect(bellPanner);
+      bellWetGain.connect(bellPanner);
+      bellPanner.connect(dryGain);
+      bellPanner.connect(wetGain);
+      bellOsc.start(now);
+
+      function triggerBell() {
+        const t0 = audioCtx.currentTime;
+        const freq = 200 + Math.random() * 800;
+        bellOsc.frequency.cancelScheduledValues(t0);
+        bellOsc.frequency.setValueAtTime(freq, t0);
+        const peakGain = 0.3 + Math.random() * 0.5;
+        bellDryGain.gain.cancelScheduledValues(t0);
+        bellDryGain.gain.setValueAtTime(0.0, t0);
+        bellDryGain.gain.linearRampToValueAtTime(peakGain * 0.3, t0 + 0.005);
+        bellDryGain.gain.linearRampToValueAtTime(0.0, t0 + 3.5);
+        bellWetGain.gain.cancelScheduledValues(t0);
+        bellWetGain.gain.setValueAtTime(0.0, t0);
+        bellWetGain.gain.linearRampToValueAtTime(peakGain * 0.7, t0 + 0.005);
+        bellWetGain.gain.linearRampToValueAtTime(0.0, t0 + 3.5);
+      }
+
+      function scheduleBell() {
+        const delay = 100 + Math.random() * 9900;
+        setTimeout(() => {
+          triggerBell();
+          scheduleBell();
+        }, delay);
+      }
+      scheduleBell();
+
+      // D) GRANULAR SYNTHESIS
+      const granularBuffer = createGranularBuffer(audioCtx, 4.0);
+      function applyHanningEnvelope(gainNode, t0, duration) {
+        gainNode.gain.setValueAtTime(0.0, t0);
+        gainNode.gain.linearRampToValueAtTime(1.0, t0 + duration / 2);
+        gainNode.gain.linearRampToValueAtTime(0.0, t0 + duration);
+      }
+      function triggerGranularGrain(regionStart, regionEnd) {
+        const t0 = audioCtx.currentTime;
+        const grainSource = audioCtx.createBufferSource();
+        grainSource.buffer = granularBuffer;
+        grainSource.loop = false;
+        const offset = regionStart + Math.random() * (regionEnd - regionStart);
+        const duration = 0.05 + Math.random() * 0.25;
+        grainSource.start(t0, offset, duration);
+        const pitch = 0.5 + Math.random() * 1.5;
+        grainSource.playbackRate.setValueAtTime(pitch, t0);
+        const grainGain = audioCtx.createGain();
+        applyHanningEnvelope(grainGain, t0, duration);
+        const grainPanner = audioCtx.createStereoPanner();
+        const pan = (Math.random() * 2.0 - 1.0) * 0.8;
+        grainPanner.pan.setValueAtTime(pan, t0);
+        grainSource.connect(grainGain).connect(grainPanner);
+        grainPanner.connect(dryGain);
+        grainPanner.connect(convolver);
+        setTimeout(() => {
+          grainSource.stop();
+          grainSource.disconnect();
+          grainGain.disconnect();
+          grainPanner.disconnect();
+        }, (duration + 0.1) * 1000);
+      }
+      function scheduleGranularLayerA() {
+        const delay = 100 + Math.random() * 9900;
+        setTimeout(() => {
+          triggerGranularGrain(0.0, 2.0);
+          scheduleGranularLayerA();
+        }, delay);
+      }
+      function scheduleGranularLayerB() {
+        const delay = 100 + Math.random() * 9900;
+        setTimeout(() => {
+          triggerGranularGrain(2.0, 4.0);
+          scheduleGranularLayerB();
+        }, delay);
+      }
+      scheduleGranularLayerA();
+      scheduleGranularLayerB();
+
+      // E) BRUIT BLANC FRACTAL
+      const noiseBuf = audioCtx.createBuffer(1, 3 * audioCtx.sampleRate, audioCtx.sampleRate);
+      const noiseData = noiseBuf.getChannelData(0);
+      for (let i = 0; i < noiseData.length; i++) {
+        noiseData[i] = Math.random() * 2 - 1;
+      }
+      const noiseSource = audioCtx.createBufferSource();
+      noiseSource.buffer = noiseBuf;
+      noiseSource.loop   = true;
+      const noiseFilterA = audioCtx.createBiquadFilter();
+      noiseFilterA.type  = "lowpass";
+      noiseFilterA.frequency.value = 1200;
+      const noiseFilterB = audioCtx.createBiquadFilter();
+      noiseFilterB.type  = "lowpass";
+      noiseFilterB.frequency.value = 800;
+      const noiseGain = audioCtx.createGain();
+      noiseGain.gain.value = 0.0;
+      const noisePanner = audioCtx.createStereoPanner();
+      noisePanner.pan.value = -0.2;
+      noiseSource.connect(noiseFilterA).connect(noiseFilterB).connect(noiseGain).connect(noisePanner);
+      noisePanner.connect(dryGain);
+      noisePanner.connect(convolver);
+      noiseSource.start(now);
+      noiseGain.gain.setValueAtTime(0.0, now);
+      noiseGain.gain.linearRampToValueAtTime(0.18, now + 15.0);
+      const lfoNoise = audioCtx.createOscillator();
+      lfoNoise.type = "sine";
+      lfoNoise.frequency.value = 0.012;
+      const lfoNoiseGain = audioCtx.createGain();
+      lfoNoiseGain.gain.value = 400;
+      lfoNoise.connect(lfoNoiseGain);
+      lfoNoiseGain.connect(noiseFilterB.frequency);
+      lfoNoise.start(now);
+
+      function scheduleNoiseToggle() {
+        const t0n = audioCtx.currentTime;
+        const targetGain = Math.random() * 0.18 + 0.02;
+        noiseGain.gain.cancelScheduledValues(t0n);
+        noiseGain.gain.linearRampToValueAtTime(targetGain, t0n + 2.0);
+        const holdTime = 8000 + Math.random() * 8000;
+        setTimeout(() => {
+          const t1n = audioCtx.currentTime;
+          noiseGain.gain.cancelScheduledValues(t1n);
+          noiseGain.gain.linearRampToValueAtTime(0.0, t1n + 6.0);
+          setTimeout(scheduleNoiseToggle, 12000 + Math.random() * 8000);
+        }, holdTime);
+      }
+      scheduleNoiseToggle();
+
+      // F) NOTES SINUSOÏDALES
+      function playShortTone() {
+        const t0 = audioCtx.currentTime;
+        const toneOsc = audioCtx.createOscillator();
+        toneOsc.type = "sine";
+        toneOsc.frequency.value = 300 + Math.random() * 500;
+        const toneGain = audioCtx.createGain();
+        const peak = 0.05 + Math.random() * 0.15;
+        toneGain.gain.setValueAtTime(0.0, t0);
+        const tonePanner = audioCtx.createStereoPanner();
+        tonePanner.pan.value = (Math.random() * 2.0 - 1.0) * 0.8;
+        const noteConvolver = audioCtx.createConvolver();
+        noteConvolver.buffer = generateReverbImpulseResponse(audioCtx, 4.0, 3.2);
+        const noteWetGain = audioCtx.createGain();
+        noteWetGain.gain.value = 0.7;
+        toneOsc.connect(toneGain).connect(tonePanner);
+        toneOsc.connect(noteConvolver).connect(noteWetGain).connect(tonePanner);
+        tonePanner.connect(dryGain);
+        tonePanner.connect(wetGain);
+        toneOsc.start(t0);
+        toneGain.gain.linearRampToValueAtTime(peak, t0 + 0.01);
+        toneGain.gain.linearRampToValueAtTime(0.0, t0 + 4.5);
+        toneOsc.stop(t0 + 4.6);
+        setTimeout(() => {
+          toneOsc.disconnect();
+          toneGain.disconnect();
+          noteConvolver.disconnect();
+          noteWetGain.disconnect();
+          tonePanner.disconnect();
+        }, 5000);
+      }
+      function scheduleShortTone() {
+        const delay = 100 + Math.random() * 9900;
+        setTimeout(() => {
+          playShortTone();
+          scheduleShortTone();
+        }, delay);
+      }
+      scheduleShortTone();
+
+      // G) PING-PONG SIMPLIFIÉ (mono feedback)
+      const delayLeft  = audioCtx.createDelay(5.0);
+      const delayRight = audioCtx.createDelay(5.0);
+      const fbGain     = audioCtx.createGain();
+      fbGain.gain.value = 0.3;
+      dryGain.connect(delayLeft);
+      delayLeft.connect(delayRight);
+      delayRight.connect(fbGain);
+      fbGain.connect(delayLeft);
+      delayRight.connect(masterGain);
+
+      // H) LFOs DE PANNING POUR FM PADS
+      const lfoPan1 = audioCtx.createOscillator();
+      lfoPan1.type = "sine";
+      lfoPan1.frequency.value = 0.02;
+      const lfoPanGain1 = audioCtx.createGain();
+      lfoPanGain1.gain.value = 0.8;
+      lfoPan1.connect(lfoPanGain1);
+
+      const lfoPan2 = audioCtx.createOscillator();
+      lfoPan2.type = "sine";
+      lfoPan2.frequency.value = 0.07;
+      const lfoPanGain2 = audioCtx.createGain();
+      lfoPanGain2.gain.value = 0.5;
+      lfoPan2.connect(lfoPanGain2);
+
+      lfoPanGain1.connect(fmPanner1.pan);
+      lfoPanGain2.connect(fmPanner1.pan);
+      lfoPanGain1.connect(fmPanner2.pan);
+      lfoPanGain2.connect(fmPanner2.pan);
+
+      lfoPan1.start(now);
+      lfoPan2.start(now);
+
+    } catch (err) {
+      console.error("Erreur lors de l'initialisation du moteur audio :", err);
+    }
+  }
+
+  const overlay = document.getElementById('overlay');
+  overlay.addEventListener('click', () => {
+    overlay.style.display = 'none';
+    requestAnimationFrame(renderFrame);
+    initAudioComplex();
+  });
+
+  // Pour voir l’animation seule :
+  // requestAnimationFrame(renderFrame);
+
+</script>
+</body>
+</html>
